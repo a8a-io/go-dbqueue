@@ -3,7 +3,7 @@ package godbqueue
 import (
 	"fmt"
 
-	"github.com/go-pg/pg"
+	"github.com/go-pg/pg/v10"
 )
 
 func initDBConnection(connUrl string) *pg.DB {
@@ -21,15 +21,14 @@ func initDBConnection(connUrl string) *pg.DB {
 
 func createDB(db *pg.DB) error {
 	query := `
-		CREATE TABLE IF NOT EXISTS queue {
-			id BIGSERIAL,
-			topic varchar(100)
-			key BINARY,
-			body BINARY,
-			ts BIGINT,
-			status INT,
-			PRIMARY KEY(id)
-		}
+		CREATE TABLE IF NOT EXISTS messages (
+			id BIGSERIAL PRIMARY KEY,
+			topic VARCHAR(100),
+			key BYTEA,
+			body BYTEA,
+			time_stamp BIGINT,
+			status INT not null default 0
+		)
 	`
 	_, err := db.Exec(query)
 	if err != nil {

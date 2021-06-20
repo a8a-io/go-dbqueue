@@ -1,43 +1,60 @@
 package godbqueue
 
 import (
+	"crypto/md5"
+	"fmt"
+	"hash"
 	"time"
 
-	"github.com/go-pg/pg"
+	"github.com/go-pg/pg/v10"
 )
 
 type Message struct {
-	Id        int64    `pg:"id"`
-	Topic     string   `pg:"topic"`
-	Key       []byte   `pg:"key"`
-	Body      []byte   `pg:"body"`
-	TimeStamp int64    `pg:"ts"`
-	Status    int32    `pg:"status"`
-	tableName struct{} `pg:"queue"`
+	Id        int64  `pg:"id,pk"`
+	Topic     string `pg:"topic,notnull"`
+	Key       []byte `pg:"key"`
+	Body      []byte `pg:"body"`
+	TimeStamp int64  `pg:"time_stamp,notnull"`
+	Status    int32  `pg:"status,default:0,notnull,use_zero"`
 }
 
 type DBQueue interface {
 	Enque(topic string, key []byte, message []byte) error
-	Deque(topic string) (Message, error)
+	Deque(topic string) (*Message, error)
 	Commit(topic string, id int64) error
 	Release(topic string, id int64) error
 }
 
-func NewDBQueue(dbConnUrl string, appName string) DBQueue {
+func NewDBQueue(dbConnUrl string, appName string) (DBQueue, error) {
 	db := initDBConnection(dbConnUrl)
-	_ = createDB(db)
-	return &_DBQueue{db, appName}
+	err := createDB(db)
+	if err != nil {
+		return nil, err
+	}
+
+	return &_DBQueue{md5.New(), db, appName}, nil
 }
 
+// func NewDBQueueConn(db *pg.DB, appName string) DBQueue {
+// 	_ = createDB(db)
+// 	return &_DBQueue{db, appName}
+// }
+
 type _DBQueue struct {
+	h       hash.Hash
 	db      *pg.DB
 	appName string
 }
 
 func (this *_DBQueue) Enque(topic string, key []byte, body []byte) error {
-	msg := Message{Topic: topic, Key: key, Body: body, TimeStamp: time.Now().Unix()}
-	_, err := this.db.Model(&msg).Insert()
-
+	fmt.Println("enque")
+	if key == nil {
+		key = this.h.Sum(body)
+	}
+	msg := Message{Topic: topic, Key: key, Body: body, TimeStamp: time.Now().Unix(), Status: 0}
+	fmt.Println("Calling Save")
+	res, err := this.db.Model(&msg).Insert()
+	fmt.Println(res.RowsAffected())
 	if err != nil {
 		return err
 	}
@@ -45,47 +62,47 @@ func (this *_DBQueue) Enque(topic string, key []byte, body []byte) error {
 	return nil
 }
 
-func (this *_DBQueue) Deque(topic string) (Message, error) {
+func (this *_DBQueue) Deque(topic string) (*Message, error) {
 	tx, err := this.db.Begin()
 	if err != nil {
-		return Message{}, err
+		return &Message{}, err
 	}
 	defer tx.Rollback()
 
-	query := `SELECT q.*
-		FROM "queue" q
+	query := `SELECT m.*
+		FROM "messages" m
 		WHERE
-			q.status = 0
-		ORDER BY ts
+			m.status = 0
+		ORDER BY time_stamp, id
 		LIMIT 1 FOR UPDATE SKIP LOCKED
    `
 	var message Message
 	_, err = tx.QueryOne(&message, query)
 	if err != nil {
-		return Message{}, err
+		return &Message{}, err
 	}
 
 	message.Status = 1
-	err = tx.Update(message)
+	_, err = tx.Model(&message).Column("status").WherePK().Update()
 	if err != nil {
-		return Message{}, err
+		return &Message{}, err
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		return Message{}, err
+		return &Message{}, err
 	}
-	return message, nil
+	return &message, nil
 }
 
 func (this *_DBQueue) Commit(topic string, id int64) error {
-	query := `update queue set status=2 where topic = ? and id = ?`
+	query := `update messages set status=2 where topic = ? and id = ?`
 	_, err := this.db.Exec(query, topic, id)
 	return err
 }
 
 func (this *_DBQueue) Release(topic string, id int64) error {
-	query := `update queue set status=0 where topic = ? and id = ?`
+	query := `update messages set status=0 where topic = ? and id = ?`
 	_, err := this.db.Exec(query, topic, id)
 	return err
 }
